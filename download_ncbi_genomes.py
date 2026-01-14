@@ -13,6 +13,7 @@ import json
 import logging
 import argparse
 import subprocess
+import shutil
 from pathlib import Path
 from typing import Dict, List, Set, Optional, Tuple
 from collections import defaultdict
@@ -230,6 +231,45 @@ class NCBIGenomeDownloader:
         
         logger.info(f"映射报告已保存到: {output_path}")
     
+    def generate_filename(self, tax_id: int, original_filename: str = "") -> str:
+        """
+        生成基于CGMCC编号和TaxID的文件名
+        
+        Args:
+            tax_id: NCBI Tax ID
+            original_filename: 原始文件名（可选，用于保留扩展名）
+            
+        Returns:
+            生成的文件名
+        """
+        cgmcc_list = self.taxid_to_cgmcc.get(tax_id, [])
+        
+        # 过滤掉NO_CGMCC_开头的占位符
+        real_cgmcc_list = [c for c in cgmcc_list if not c.startswith("NO_CGMCC_")]
+        
+        if not real_cgmcc_list:
+            # 如果没有CGMCC编号，使用TaxID
+            base_name = f"TaxID_{tax_id}"
+        elif len(real_cgmcc_list) == 1:
+            # 一个CGMCC对应一个TaxID：CGMCC编号_TaxID
+            cgmcc_clean = real_cgmcc_list[0].replace(" ", "_")
+            base_name = f"{cgmcc_clean}_TaxID_{tax_id}"
+        else:
+            # 多个CGMCC对应一个TaxID：把所有CGMCC都放在文件名里
+            cgmcc_clean = "_".join([c.replace(" ", "_") for c in real_cgmcc_list])
+            base_name = f"{cgmcc_clean}_TaxID_{tax_id}"
+        
+        # 如果有原始文件名，保留扩展名
+        if original_filename:
+            # 提取扩展名
+            if '.' in original_filename:
+                ext = '.' + original_filename.rsplit('.', 1)[1]
+                return f"{base_name}{ext}"
+            else:
+                return base_name
+        else:
+            return base_name
+    
     def check_ncbi_genome_download(self) -> bool:
         """检查是否安装了ncbi-genome-download"""
         try:
@@ -257,6 +297,10 @@ class NCBIGenomeDownloader:
         if output_dir is None:
             output_dir = self.download_dir
         
+        # 创建临时目录用于下载
+        temp_dir = output_dir / 'temp_download'
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
         try:
             logger.info(f"使用ncbi-genome-download下载Tax ID {tax_id}的基因组...")
             
@@ -266,7 +310,7 @@ class NCBIGenomeDownloader:
                 'ncbi-genome-download',
                 'bacteria',  # 必需的位置参数：组名
                 '--taxids', str(tax_id),  # 注意是--taxids（复数）
-                '-o', str(output_dir),  # 使用-o而不是--output-folder
+                '-o', str(temp_dir),  # 使用临时目录
                 '-F', 'fasta',  # 使用-F而不是--format
                 '-l', 'complete,chromosome,scaffold,contig',  # 使用-l而不是--assembly-level
                 '-p', '1'  # 使用-p而不是--parallel
@@ -279,21 +323,45 @@ class NCBIGenomeDownloader:
                 timeout=600  # 10分钟超时
             )
             
-            if result.returncode == 0:
-                logger.info(f"Tax ID {tax_id}的基因组下载成功")
+            # 查找下载的文件
+            refseq_dir = temp_dir / 'refseq' / 'bacteria'
+            genbank_dir = temp_dir / 'genbank' / 'bacteria'
+            
+            downloaded_files = []
+            for base_dir in [refseq_dir, genbank_dir]:
+                if base_dir.exists():
+                    # 查找该tax_id对应的所有文件
+                    for tax_dir in base_dir.iterdir():
+                        if tax_dir.is_dir():
+                            # 查找genomic.fna.gz文件
+                            for fna_file in tax_dir.glob("*_genomic.fna.gz"):
+                                downloaded_files.append(fna_file)
+            
+            if downloaded_files:
+                # 使用第一个找到的文件
+                source_file = downloaded_files[0]
+                # 生成新文件名
+                new_filename = self.generate_filename(tax_id, source_file.name)
+                target_file = output_dir / new_filename
+                
+                # 复制/移动文件到目标位置
+                shutil.copy2(source_file, target_file)
+                logger.info(f"Tax ID {tax_id}的基因组已下载并重命名为: {target_file.name}")
+                
+                # 清理临时目录
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                
                 return True
             else:
-                # 检查是否有实际下载的文件（即使返回码非0，有时也会下载成功）
-                # ncbi-genome-download在某些情况下会返回非0但实际已下载
-                error_msg = result.stderr if result.stderr else result.stdout
-                logger.warning(f"Tax ID {tax_id}下载命令返回非0: {error_msg[:200]}")
-                # 检查是否实际下载了文件
-                # 文件通常保存在 refseq/bacteria/ 或 genbank/bacteria/ 目录下
-                refseq_dir = output_dir / 'refseq' / 'bacteria'
-                genbank_dir = output_dir / 'genbank' / 'bacteria'
-                if refseq_dir.exists() or genbank_dir.exists():
-                    logger.info(f"Tax ID {tax_id}可能已下载（检查输出目录）")
-                    return True
+                # 检查返回码
+                if result.returncode == 0:
+                    logger.warning(f"Tax ID {tax_id}下载命令成功但未找到文件")
+                else:
+                    error_msg = result.stderr if result.stderr else result.stdout
+                    logger.warning(f"Tax ID {tax_id}下载命令返回非0: {error_msg[:200]}")
                 return False
                 
         except subprocess.TimeoutExpired:
@@ -384,7 +452,9 @@ class NCBIGenomeDownloader:
             
             logger.info(f"下载基因组文件: {genome_url}")
             
-            local_file = output_dir / f"taxid_{tax_id}_{genome_file}"
+            # 使用新的命名规则
+            new_filename = self.generate_filename(tax_id, genome_file)
+            local_file = output_dir / new_filename
             response = self.session.get(genome_url, stream=True, timeout=300)
             response.raise_for_status()
             
@@ -393,7 +463,7 @@ class NCBIGenomeDownloader:
                     if chunk:
                         f.write(chunk)
             
-            logger.info(f"Tax ID {tax_id}的基因组已下载到: {local_file}")
+            logger.info(f"Tax ID {tax_id}的基因组已下载到: {local_file.name}")
             return True
             
         except Exception as e:
@@ -404,6 +474,10 @@ class NCBIGenomeDownloader:
         """
         下载所有Tax ID对应的基因组
         
+        处理多对多关系：
+        - 如果一个CGMCC对应多个TaxID：只下载第一个TaxID
+        - 如果多个CGMCC对应一个TaxID：把所有CGMCC都放在文件名里
+        
         Args:
             use_ncbi_genome_download: 是否使用ncbi-genome-download工具（如果可用）
             
@@ -411,10 +485,41 @@ class NCBIGenomeDownloader:
             下载结果字典 {Tax ID: 是否成功}
         """
         results = {}
-        tax_ids = list(self.taxid_to_cgmcc.keys())
-        total = len(tax_ids)
         
-        logger.info(f"\n开始下载 {total} 个基因组的基因组...")
+        # 处理一个CGMCC对应多个TaxID的情况：只下载第一个TaxID
+        # 记录已经下载的CGMCC编号，避免重复下载
+        downloaded_cgmcc = set()
+        tax_ids_to_download = []
+        
+        # 对TaxID进行排序，确保结果可重复
+        sorted_tax_ids = sorted(self.taxid_to_cgmcc.keys())
+        
+        for tax_id in sorted_tax_ids:
+            cgmcc_list = self.taxid_to_cgmcc.get(tax_id, [])
+            # 过滤掉NO_CGMCC_开头的占位符
+            real_cgmcc_list = [c for c in cgmcc_list if not c.startswith("NO_CGMCC_")]
+            
+            if real_cgmcc_list:
+                # 检查这个CGMCC是否已经下载过
+                should_skip = False
+                for cgmcc in real_cgmcc_list:
+                    if cgmcc in downloaded_cgmcc:
+                        # 这个CGMCC已经下载过了，跳过
+                        should_skip = True
+                        logger.info(f"跳过Tax ID {tax_id}（CGMCC {cgmcc}已下载）")
+                        break
+                
+                if not should_skip:
+                    # 标记这些CGMCC为已下载
+                    for cgmcc in real_cgmcc_list:
+                        downloaded_cgmcc.add(cgmcc)
+                    tax_ids_to_download.append(tax_id)
+            else:
+                # 没有CGMCC编号的TaxID，直接下载
+                tax_ids_to_download.append(tax_id)
+        
+        total = len(tax_ids_to_download)
+        logger.info(f"\n开始下载 {total} 个基因组（已过滤重复的CGMCC）...")
         
         # 检查是否可以使用ncbi-genome-download
         if use_ncbi_genome_download and self.check_ncbi_genome_download():
@@ -426,7 +531,7 @@ class NCBIGenomeDownloader:
                 logger.info("提示: 安装ncbi-genome-download可以获得更好的下载体验: pip install ncbi-genome-download")
             download_func = self.download_genome_entrez_api
         
-        for idx, tax_id in enumerate(tax_ids, 1):
+        for idx, tax_id in enumerate(tax_ids_to_download, 1):
             logger.info(f"\n[{idx}/{total}] 处理Tax ID: {tax_id}")
             cgmcc_list = self.taxid_to_cgmcc.get(tax_id, [])
             species = self.taxid_to_species.get(tax_id, "未知")
