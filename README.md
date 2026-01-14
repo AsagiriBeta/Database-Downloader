@@ -340,10 +340,3 @@ Database-Downloader/
 - `config.json` 和 `cgmcc_token.json` 不在仓库中，需要根据 `config.json.example` 创建
 - `input/`、`output/`、`logs/`、`downloads/`、`genomes/` 目录已添加到 `.gitignore`，不会被提交到Git
 
-## 许可证
-
-本项目仅供学习和研究使用。
-
-## 贡献
-
-欢迎提交Issue和Pull Request！
