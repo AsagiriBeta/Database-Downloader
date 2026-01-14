@@ -1,0 +1,32 @@
+{
+  "base_url": "https://www.cgmcc.net",
+  "download_dir": "./downloads",
+  "username": "",
+  "password": "",
+  "logincode": "",
+  "token": "",
+  "cookies": {},
+  "token_file": "cgmcc_token.json",
+  "api_login_url": "/cgmccapi/restrict/user/login",
+  "api_auth_header": "Authorization",
+  "token_type": "Bearer",
+  "timeout": 30,
+  "retry_times": 3,
+  "retry_delay": 5,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  "download_urls": [],
+  "ftp_config": {
+    "host": "",
+    "port": 21,
+    "username": "",
+    "password": "",
+    "remote_path": "/",
+    "files": []
+  },
+  "use_selenium": false,
+  "selenium_config": {
+    "headless": true,
+    "browser": "chrome",
+    "wait_timeout": 10
+  }
+}
